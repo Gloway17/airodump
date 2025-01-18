@@ -49,7 +49,7 @@ struct packet_info {
     uint8_t Data;
     uint8_t s;
     uint8_t CH;
-    uint8_t MB;
+    uint16_t MB;
     uint8_t ENC;
     uint8_t CIPHER;
     uint8_t AUTH;
@@ -87,6 +87,30 @@ void channel_hopper() {
     // printf("Switched to channel %d\n", current_channel);
 
     // sleep(1); // 간격 대기
+}
+
+// 데이터 속도 계산 함수
+uint16_t calculate_ht_speed(uint8_t mcs_index, uint8_t bandwidth_mhz, uint8_t spatial_streams) {
+    // MCS 인덱스에 따른 기본 전송 속도 (Mbps, 20 MHz 기준)
+    static const double mcs_base_rate[16] = {
+        6.5,  13.0,  19.5,  26.0,  39.0,  52.0,  58.5,  65.0, 
+        13.0, 26.0,  39.0,  52.0,  78.0, 104.0, 117.0, 130.0
+    };
+
+    // 유효한 MCS 인덱스 확인
+    if (mcs_index < 0 || mcs_index > 15) {
+        printf("Invalid MCS index! Must be between 0 and 15.\n");
+        return -1;
+    }
+
+    // 채널 대역폭에 따른 배수 계산 (40 MHz는 2배 속도)
+    double bandwidth_multiplier = (bandwidth_mhz == 40) ? 2.0 : 1.0;
+
+    // 데이터 속도 계산
+    double base_rate = mcs_base_rate[mcs_index];
+    double total_speed = base_rate * bandwidth_multiplier * spatial_streams;
+
+    return total_speed;
 }
 
 // Function to parse tagged parameters into packet_info
@@ -127,6 +151,19 @@ void parse_tagged_parameters(uint8_t *tagged_parameters, uint16_t length) {
                 }
                 break;
             
+            case 0x2D: // HT Capabilities
+                if (tag_len >= 4) {
+                    // Extract MCS index and bandwidth
+                    int mcs_index = tagged_parameters[offset + 2] & 0x0F; // MCS index (lower 4 bits)
+                    int bandwidth_mhz = (tagged_parameters[offset + 3] & 0x02) ? 40 : 20; // Channel bandwidth
+                    int spatial_streams = 1; // Single spatial stream (can be extended)
+
+                    // Calculate HT speed
+                    if (calculate_ht_speed(mcs_index, bandwidth_mhz, spatial_streams) > PacketInfo.MB)
+                        PacketInfo.MB = calculate_ht_speed(mcs_index, bandwidth_mhz, spatial_streams);
+                }
+                break;
+            
             case 0x32: // Supported Rates (MB - Maximum Bitrate)
                 if (tag_len > 0) {
                     uint8_t max_rate = 0;
@@ -135,7 +172,8 @@ void parse_tagged_parameters(uint8_t *tagged_parameters, uint16_t length) {
                             max_rate = tagged_parameters[offset + 2 + i];
                         }
                     }
-                    PacketInfo.MB = max_rate / 2; // Convert to Mbps
+                    if (max_rate / 2 > PacketInfo.MB)
+                        PacketInfo.MB = max_rate / 2; // Convert to Mbps
                 }
                 break;
 
@@ -246,10 +284,10 @@ int airodump_print(uint8_t ch, struct packet_info *PacketInfo) {
             0,              // #Data,
             0,              // #/s
             aps[i].CH,      // CH
-            aps[i].MB,              // MB
-            aps[i].ENC    == 2 ? "WPA2" : "????", // ENC
-            aps[i].CIPHER == 1 ? "AES" : (aps[i].CIPHER == 2 ? "TKIP" : "????"), // CIPHER
-            aps[i].AUTH   == 1 ? "PSK" : (aps[i].AUTH   == 2 ? "EAP" : "????"), // AUTH
+            aps[i].MB,      // MB
+            aps[i].ENC    == 2 ? "WPA2" : "????",                                // ENC
+            aps[i].CIPHER == 1 ? "CCMP" : (aps[i].CIPHER == 2 ? "TKIP" : "????"), // CIPHER
+            aps[i].AUTH   == 1 ? "PSK" : (aps[i].AUTH   == 2 ? "EAP" : "????"),  // AUTH
             aps[i].ESSID);  // ESSID
     }
 };
